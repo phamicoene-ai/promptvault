@@ -1,8 +1,8 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { db } from './db/client';
-import { prompts } from './db/schema';
+import { db } from './db/client.js';
+import { prompts } from './db/schema.js';
 import { eq, desc } from 'drizzle-orm';
 
 const app = new Hono();
