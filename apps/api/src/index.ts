@@ -74,5 +74,11 @@ app.post('/api/prompts/:id/vote', async (c) => {
 });
 
 const port = Number(process.env.PORT) || 3001;
-console.log(`API running on http://localhost:${port}`);
-serve({ fetch: app.fetch, port });
+
+console.log(`API running on http://0.0.0.0:${port}`);
+
+serve({
+  fetch: app.fetch,
+  port,
+  hostname: '0.0.0.0',
+});
