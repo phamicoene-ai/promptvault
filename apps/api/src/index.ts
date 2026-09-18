@@ -6,7 +6,23 @@ import { prompts } from './db/schema.js';
 import { eq, desc } from 'drizzle-orm';
 
 const app = new Hono();
-app.use('*', cors());
+
+// CORS pour autoriser Vercel + localhost
+app.use(
+  '*',
+  cors({
+    origin: [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://promptvault-pearl.vercel.app',
+      'https://promptvault.vercel.app',
+      'https://promptvault-git-main-phamicoene-ai.vercel.app',
+    ],
+    credentials: true,
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
 // Health
 app.get('/', (c) => c.json({ status: 'ok', service: 'PromptVault API', db: 'postgres' }));
@@ -32,12 +48,15 @@ app.post('/api/prompts', async (c) => {
   if (!body.title || !body.content) {
     return c.json({ error: 'title and content required' }, 400);
   }
-  const [newPrompt] = await db.insert(prompts).values({
-    title: body.title,
-    content: body.content,
-    tags: body.tags || [],
-    author: body.author || 'anonymous',
-  }).returning();
+  const [newPrompt] = await db
+    .insert(prompts)
+    .values({
+      title: body.title,
+      content: body.content,
+      tags: body.tags || [],
+      author: body.author || 'anonymous',
+    })
+    .returning();
   return c.json(newPrompt, 201);
 });
 
@@ -45,7 +64,8 @@ app.post('/api/prompts', async (c) => {
 app.put('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
-  const [updated] = await db.update(prompts)
+  const [updated] = await db
+    .update(prompts)
     .set({ ...body, updatedAt: new Date() })
     .where(eq(prompts.id, id))
     .returning();
@@ -66,7 +86,8 @@ app.post('/api/prompts/:id/vote', async (c) => {
   const id = c.req.param('id');
   const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
   if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
-  const [updated] = await db.update(prompts)
+  const [updated] = await db
+    .update(prompts)
     .set({ votes: prompt.votes + 1 })
     .where(eq(prompts.id, id))
     .returning();
