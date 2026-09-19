@@ -2,12 +2,18 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { db } from './db/client.js';
-import { prompts } from './db/schema.js';
+import { prompts, users } from './db/schema.js';
 import { eq, desc } from 'drizzle-orm';
+import {
+  hashPassword,
+  verifyPassword,
+  generateToken,
+  verifyToken,
+} from './auth.js';
 
 const app = new Hono();
 
-// CORS pour autoriser Vercel + localhost
+// CORS
 app.use(
   '*',
   cors({
@@ -25,16 +31,146 @@ app.use(
 );
 
 // Health
-app.get('/', (c) => c.json({ status: 'ok', service: 'PromptVault API', db: 'postgres' }));
+app.get('/', (c) =>
+  c.json({ status: 'ok', service: 'PromptVault API', db: 'postgres' })
+);
 app.get('/health', (c) => c.json({ status: 'healthy' }));
 
-// GET all prompts
+// ================================
+// AUTH ROUTES
+// ================================
+
+app.post('/api/auth/register', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { email, password, username } = body;
+
+    if (!email || !password || !username) {
+      return c.json({ error: 'email, password, username required' }, 400);
+    }
+
+    if (password.length < 6) {
+      return c.json({ error: 'password must be at least 6 characters' }, 400);
+    }
+
+    const [existing] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
+    if (existing) {
+      return c.json({ error: 'email already registered' }, 409);
+    }
+
+    const [existingUsername] = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, username));
+    if (existingUsername) {
+      return c.json({ error: 'username already taken' }, 409);
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    const [newUser] = await db
+      .insert(users)
+      .values({ email, passwordHash, username })
+      .returning();
+
+    const token = generateToken(newUser.id, newUser.email);
+
+    return c.json(
+      {
+        token,
+        user: {
+          id: newUser.id,
+          email: newUser.email,
+          username: newUser.username,
+        },
+      },
+      201
+    );
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Registration failed' }, 500);
+  }
+});
+
+app.post('/api/auth/login', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { email, password } = body;
+
+    if (!email || !password) {
+      return c.json({ error: 'email and password required' }, 400);
+    }
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
+    if (!user) {
+      return c.json({ error: 'invalid credentials' }, 401);
+    }
+
+    const valid = await verifyPassword(password, user.passwordHash);
+    if (!valid) {
+      return c.json({ error: 'invalid credentials' }, 401);
+    }
+
+    const token = generateToken(user.id, user.email);
+
+    return c.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Login failed' }, 500);
+  }
+});
+
+app.get('/api/auth/me', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'no token' }, 401);
+  }
+
+  const token = authHeader.slice(7);
+  const payload = verifyToken(token);
+  if (!payload) {
+    return c.json({ error: 'invalid token' }, 401);
+  }
+
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, payload.userId));
+  if (!user) {
+    return c.json({ error: 'user not found' }, 404);
+  }
+
+  return c.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+    },
+  });
+});
+
+// ================================
+// PROMPTS ROUTES
+// ================================
+
 app.get('/api/prompts', async (c) => {
   const all = await db.select().from(prompts).orderBy(desc(prompts.createdAt));
   return c.json({ count: all.length, prompts: all });
 });
 
-// GET one prompt
 app.get('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
@@ -42,25 +178,37 @@ app.get('/api/prompts/:id', async (c) => {
   return c.json(prompt);
 });
 
-// POST create prompt
 app.post('/api/prompts', async (c) => {
-  const body = await c.req.json();
-  if (!body.title || !body.content) {
-    return c.json({ error: 'title and content required' }, 400);
+  try {
+    const body = await c.req.json();
+    if (!body.title || !body.content) {
+      return c.json({ error: 'title and content required' }, 400);
+    }
+
+    let userId: string | null = null;
+    const authHeader = c.req.header('Authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      const payload = verifyToken(authHeader.slice(7));
+      if (payload) userId = payload.userId;
+    }
+
+    const [newPrompt] = await db
+      .insert(prompts)
+      .values({
+        title: body.title,
+        content: body.content,
+        tags: body.tags || [],
+        author: body.author || 'anonymous',
+        userId,
+      })
+      .returning();
+    return c.json(newPrompt, 201);
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Creation failed' }, 500);
   }
-  const [newPrompt] = await db
-    .insert(prompts)
-    .values({
-      title: body.title,
-      content: body.content,
-      tags: body.tags || [],
-      author: body.author || 'anonymous',
-    })
-    .returning();
-  return c.json(newPrompt, 201);
 });
 
-// PUT update prompt
 app.put('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -73,15 +221,16 @@ app.put('/api/prompts/:id', async (c) => {
   return c.json(updated);
 });
 
-// DELETE prompt
 app.delete('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
-  const [deleted] = await db.delete(prompts).where(eq(prompts.id, id)).returning();
+  const [deleted] = await db
+    .delete(prompts)
+    .where(eq(prompts.id, id))
+    .returning();
   if (!deleted) return c.json({ error: 'Prompt not found' }, 404);
   return c.json({ message: 'Deleted', prompt: deleted });
 });
 
-// POST vote
 app.post('/api/prompts/:id/vote', async (c) => {
   const id = c.req.param('id');
   const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
