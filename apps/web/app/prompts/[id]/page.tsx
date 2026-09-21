@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '../../components/Header';
-import { getToken } from '../../../lib/auth';
+import { getToken, getUser } from '../../../lib/auth';
 
 interface Prompt {
   id: string;
@@ -12,6 +12,7 @@ interface Prompt {
   content: string;
   tags: string[];
   author: string;
+  userId?: string | null;
   votes: number;
   hasVoted?: boolean;
   createdAt: string;
@@ -29,6 +30,14 @@ export default function PromptDetail() {
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [voting, setVoting] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    setCurrentUser(getUser());
+  }, []);
+
+  const isOwner =
+    currentUser && prompt && prompt.userId === currentUser.id;
 
   useEffect(() => {
     const load = async () => {
@@ -176,7 +185,7 @@ export default function PromptDetail() {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <button
                     onClick={handleVote}
                     disabled={voting}
@@ -186,20 +195,33 @@ export default function PromptDetail() {
                         : 'bg-slate-800/60 border-slate-700 hover:bg-yellow-500/20 hover:border-yellow-500 hover:text-yellow-400'
                     }`}
                     title={
-                      prompt.hasVoted ? 'Retirer mon vote' : 'Voter pour ce prompt'
+                      prompt.hasVoted
+                        ? 'Retirer mon vote'
+                        : 'Voter pour ce prompt'
                     }
                   >
                     <span>{prompt.hasVoted ? '⭐' : '☆'}</span>
                     <span>{prompt.votes}</span>
                   </button>
 
-                  <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    className="px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/40 text-red-400 hover:bg-red-500 hover:text-white hover:border-red-500 transition disabled:opacity-50 font-medium"
-                  >
-                    {deleting ? '⏳ Deleting...' : '🗑️ Delete'}
-                  </button>
+                  {isOwner && (
+                    <>
+                      <Link
+                        href={`/prompts/${prompt.id}/edit`}
+                        className="px-4 py-2 rounded-lg bg-blue-500/10 border border-blue-500/40 text-blue-400 hover:bg-blue-500 hover:text-white transition font-medium"
+                      >
+                        ✏️ Modifier
+                      </Link>
+
+                      <button
+                        onClick={handleDelete}
+                        disabled={deleting}
+                        className="px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/40 text-red-400 hover:bg-red-500 hover:text-white hover:border-red-500 transition disabled:opacity-50 font-medium"
+                      >
+                        {deleting ? '⏳ Deleting...' : '🗑️ Delete'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </article>
