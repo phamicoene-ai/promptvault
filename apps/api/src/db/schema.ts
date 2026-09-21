@@ -5,11 +5,9 @@ import {
   timestamp,
   uuid,
   varchar,
+  unique,
 } from 'drizzle-orm/pg-core';
 
-// ============================================
-// TABLE USERS
-// ============================================
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 255 }).notNull().unique(),
@@ -18,9 +16,6 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
-// ============================================
-// TABLE PROMPTS
-// ============================================
 export const prompts = pgTable('prompts', {
   id: uuid('id').primaryKey().defaultRandom(),
   title: varchar('title', { length: 255 }).notNull(),
@@ -33,10 +28,26 @@ export const prompts = pgTable('prompts', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
 
-// ============================================
-// TYPES
-// ============================================
+export const votes = pgTable(
+  'votes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    promptId: uuid('prompt_id')
+      .notNull()
+      .references(() => prompts.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    uniqueUserPrompt: unique().on(table.userId, table.promptId),
+  })
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Prompt = typeof prompts.$inferSelect;
 export type NewPrompt = typeof prompts.$inferInsert;
+export type Vote = typeof votes.$inferSelect;
+export type NewVote = typeof votes.$inferInsert;

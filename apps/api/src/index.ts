@@ -2,8 +2,8 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { db } from './db/client.js';
-import { prompts, users } from './db/schema.js';
-import { eq, desc } from 'drizzle-orm';
+import { prompts, users, votes } from './db/schema.js';
+import { eq, desc, and } from 'drizzle-orm';
 import {
   hashPassword,
   verifyPassword,
@@ -166,18 +166,66 @@ app.get('/api/auth/me', async (c) => {
 // PROMPTS ROUTES
 // ================================
 
+// GET all prompts
 app.get('/api/prompts', async (c) => {
   const all = await db.select().from(prompts).orderBy(desc(prompts.createdAt));
-  return c.json({ count: all.length, prompts: all });
+
+  // Ajoute le champ hasVoted pour chaque prompt
+  const authHeader = c.req.header('Authorization');
+  let userId: string | null = null;
+  if (authHeader?.startsWith('Bearer ')) {
+    const payload = verifyToken(authHeader.slice(7));
+    if (payload) userId = payload.userId;
+  }
+
+  if (userId) {
+    const userVotes = await db
+      .select()
+      .from(votes)
+      .where(eq(votes.userId, userId));
+    const votedPromptIds = new Set(userVotes.map((v) => v.promptId));
+
+    const promptsWithVoteStatus = all.map((p) => ({
+      ...p,
+      hasVoted: votedPromptIds.has(p.id),
+    }));
+
+    return c.json({
+      count: promptsWithVoteStatus.length,
+      prompts: promptsWithVoteStatus,
+    });
+  }
+
+  return c.json({
+    count: all.length,
+    prompts: all.map((p) => ({ ...p, hasVoted: false })),
+  });
 });
 
+// GET one prompt
 app.get('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
   if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
-  return c.json(prompt);
+
+  // Ajoute hasVoted
+  const authHeader = c.req.header('Authorization');
+  let hasVoted = false;
+  if (authHeader?.startsWith('Bearer ')) {
+    const payload = verifyToken(authHeader.slice(7));
+    if (payload) {
+      const [existingVote] = await db
+        .select()
+        .from(votes)
+        .where(and(eq(votes.userId, payload.userId), eq(votes.promptId, id)));
+      hasVoted = !!existingVote;
+    }
+  }
+
+  return c.json({ ...prompt, hasVoted });
 });
 
+// POST create prompt
 app.post('/api/prompts', async (c) => {
   try {
     const body = await c.req.json();
@@ -209,6 +257,7 @@ app.post('/api/prompts', async (c) => {
   }
 });
 
+// PUT update prompt
 app.put('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -221,6 +270,7 @@ app.put('/api/prompts/:id', async (c) => {
   return c.json(updated);
 });
 
+// DELETE prompt
 app.delete('/api/prompts/:id', async (c) => {
   const id = c.req.param('id');
   const [deleted] = await db
@@ -231,16 +281,65 @@ app.delete('/api/prompts/:id', async (c) => {
   return c.json({ message: 'Deleted', prompt: deleted });
 });
 
+// POST vote (1 vote par user, toggle)
 app.post('/api/prompts/:id/vote', async (c) => {
-  const id = c.req.param('id');
-  const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
-  if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
-  const [updated] = await db
-    .update(prompts)
-    .set({ votes: prompt.votes + 1 })
-    .where(eq(prompts.id, id))
-    .returning();
-  return c.json({ id: updated.id, votes: updated.votes });
+  try {
+    const id = c.req.param('id');
+
+    // Vérifie que l'user est connecté
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json({ error: 'You must be logged in to vote' }, 401);
+    }
+    const payload = verifyToken(authHeader.slice(7));
+    if (!payload) {
+      return c.json({ error: 'Invalid token' }, 401);
+    }
+
+    // Vérifie que le prompt existe
+    const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
+    if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
+
+    // Vérifie si l'user a déjà voté
+    const [existingVote] = await db
+      .select()
+      .from(votes)
+      .where(and(eq(votes.userId, payload.userId), eq(votes.promptId, id)));
+
+    if (existingVote) {
+      // Retire le vote (toggle)
+      await db.delete(votes).where(eq(votes.id, existingVote.id));
+      const [updated] = await db
+        .update(prompts)
+        .set({ votes: Math.max(0, prompt.votes - 1) })
+        .where(eq(prompts.id, id))
+        .returning();
+      return c.json({
+        id: updated.id,
+        votes: updated.votes,
+        hasVoted: false,
+      });
+    }
+
+    // Ajoute le vote
+    await db.insert(votes).values({
+      userId: payload.userId,
+      promptId: id,
+    });
+    const [updated] = await db
+      .update(prompts)
+      .set({ votes: prompt.votes + 1 })
+      .where(eq(prompts.id, id))
+      .returning();
+    return c.json({
+      id: updated.id,
+      votes: updated.votes,
+      hasVoted: true,
+    });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Vote failed' }, 500);
+  }
 });
 
 const port = Number(process.env.PORT) || 3001;
