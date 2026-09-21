@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '../../components/Header';
+import { getToken } from '../../../lib/auth';
 
 interface Prompt {
   id: string;
@@ -12,6 +13,7 @@ interface Prompt {
   tags: string[];
   author: string;
   votes: number;
+  hasVoted?: boolean;
   createdAt: string;
 }
 
@@ -32,7 +34,10 @@ export default function PromptDetail() {
     const load = async () => {
       try {
         setLoading(true);
-        const res = await fetch(`${API}/api/prompts/${id}`);
+        const token = getToken();
+        const res = await fetch(`${API}/api/prompts/${id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (!res.ok) throw new Error('Not found');
         const data = await res.json();
         setPrompt(data);
@@ -47,15 +52,28 @@ export default function PromptDetail() {
 
   const handleVote = async () => {
     if (!prompt) return;
+
+    const token = getToken();
+    if (!token) {
+      alert('Connecte-toi pour voter ! 🔐');
+      return;
+    }
+
     setVoting(true);
     try {
       const res = await fetch(`${API}/api/prompts/${prompt.id}/vote`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) throw new Error('Vote failed');
       const data = await res.json();
-      setPrompt({ ...prompt, votes: data.votes });
+      setPrompt({
+        ...prompt,
+        votes: data.votes,
+        hasVoted: data.hasVoted,
+      });
     } catch (e) {
-      alert('Error voting');
+      alert('Erreur lors du vote');
     } finally {
       setVoting(false);
     }
@@ -68,8 +86,10 @@ export default function PromptDetail() {
 
     setDeleting(true);
     try {
+      const token = getToken();
       const res = await fetch(`${API}/api/prompts/${prompt.id}`, {
         method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) throw new Error('Delete failed');
       router.push('/');
@@ -160,9 +180,16 @@ export default function PromptDetail() {
                   <button
                     onClick={handleVote}
                     disabled={voting}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800/60 border border-slate-700 hover:bg-yellow-500/20 hover:border-yellow-500 hover:text-yellow-400 hover:scale-105 transition disabled:opacity-50 font-medium"
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition disabled:opacity-50 font-medium ${
+                      prompt.hasVoted
+                        ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400 hover:bg-yellow-500/30'
+                        : 'bg-slate-800/60 border-slate-700 hover:bg-yellow-500/20 hover:border-yellow-500 hover:text-yellow-400'
+                    }`}
+                    title={
+                      prompt.hasVoted ? 'Retirer mon vote' : 'Voter pour ce prompt'
+                    }
                   >
-                    <span>⭐</span>
+                    <span>{prompt.hasVoted ? '⭐' : '☆'}</span>
                     <span>{prompt.votes}</span>
                   </button>
 
