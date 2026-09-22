@@ -170,7 +170,6 @@ app.get('/api/auth/me', async (c) => {
 app.get('/api/prompts', async (c) => {
   const all = await db.select().from(prompts).orderBy(desc(prompts.createdAt));
 
-  // Ajoute le champ hasVoted pour chaque prompt
   const authHeader = c.req.header('Authorization');
   let userId: string | null = null;
   if (authHeader?.startsWith('Bearer ')) {
@@ -208,7 +207,6 @@ app.get('/api/prompts/:id', async (c) => {
   const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
   if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
 
-  // Ajoute hasVoted
   const authHeader = c.req.header('Authorization');
   let hasVoted = false;
   if (authHeader?.startsWith('Bearer ')) {
@@ -257,36 +255,95 @@ app.post('/api/prompts', async (c) => {
   }
 });
 
-// PUT update prompt
+// ========================================
+// PUT update prompt (seul le owner peut modifier)
+// ========================================
 app.put('/api/prompts/:id', async (c) => {
-  const id = c.req.param('id');
-  const body = await c.req.json();
-  const [updated] = await db
-    .update(prompts)
-    .set({ ...body, updatedAt: new Date() })
-    .where(eq(prompts.id, id))
-    .returning();
-  if (!updated) return c.json({ error: 'Prompt not found' }, 404);
-  return c.json(updated);
+  try {
+    const id = c.req.param('id');
+
+    // 1. Vérifie que l'user est connecté
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json({ error: 'You must be logged in to edit' }, 401);
+    }
+    const payload = verifyToken(authHeader.slice(7));
+    if (!payload) {
+      return c.json({ error: 'Invalid token' }, 401);
+    }
+
+    // 2. Vérifie que le prompt existe
+    const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
+    if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
+
+    // 3. Vérifie que c'est TON prompt
+    if (prompt.userId !== payload.userId) {
+      return c.json({ error: 'You can only edit your own prompts' }, 403);
+    }
+
+    // 4. Update
+    const body = await c.req.json();
+    const [updated] = await db
+      .update(prompts)
+      .set({
+        title: body.title ?? prompt.title,
+        content: body.content ?? prompt.content,
+        tags: body.tags ?? prompt.tags,
+        updatedAt: new Date(),
+      })
+      .where(eq(prompts.id, id))
+      .returning();
+
+    return c.json(updated);
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Update failed' }, 500);
+  }
 });
 
-// DELETE prompt
+// ========================================
+// DELETE prompt (seul le owner peut supprimer)
+// ========================================
 app.delete('/api/prompts/:id', async (c) => {
-  const id = c.req.param('id');
-  const [deleted] = await db
-    .delete(prompts)
-    .where(eq(prompts.id, id))
-    .returning();
-  if (!deleted) return c.json({ error: 'Prompt not found' }, 404);
-  return c.json({ message: 'Deleted', prompt: deleted });
+  try {
+    const id = c.req.param('id');
+
+    // 1. Vérifie que l'user est connecté
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json({ error: 'You must be logged in to delete' }, 401);
+    }
+    const payload = verifyToken(authHeader.slice(7));
+    if (!payload) {
+      return c.json({ error: 'Invalid token' }, 401);
+    }
+
+    // 2. Vérifie que le prompt existe
+    const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
+    if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
+
+    // 3. Vérifie que c'est TON prompt
+    if (prompt.userId !== payload.userId) {
+      return c.json({ error: 'You can only delete your own prompts' }, 403);
+    }
+
+    // 4. Supprime
+    await db.delete(prompts).where(eq(prompts.id, id));
+
+    return c.json({ message: 'Deleted', prompt });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: 'Delete failed' }, 500);
+  }
 });
 
+// ========================================
 // POST vote (1 vote par user, toggle)
+// ========================================
 app.post('/api/prompts/:id/vote', async (c) => {
   try {
     const id = c.req.param('id');
 
-    // Vérifie que l'user est connecté
     const authHeader = c.req.header('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return c.json({ error: 'You must be logged in to vote' }, 401);
@@ -296,18 +353,15 @@ app.post('/api/prompts/:id/vote', async (c) => {
       return c.json({ error: 'Invalid token' }, 401);
     }
 
-    // Vérifie que le prompt existe
     const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
     if (!prompt) return c.json({ error: 'Prompt not found' }, 404);
 
-    // Vérifie si l'user a déjà voté
     const [existingVote] = await db
       .select()
       .from(votes)
       .where(and(eq(votes.userId, payload.userId), eq(votes.promptId, id)));
 
     if (existingVote) {
-      // Retire le vote (toggle)
       await db.delete(votes).where(eq(votes.id, existingVote.id));
       const [updated] = await db
         .update(prompts)
@@ -321,7 +375,6 @@ app.post('/api/prompts/:id/vote', async (c) => {
       });
     }
 
-    // Ajoute le vote
     await db.insert(votes).values({
       userId: payload.userId,
       promptId: id,
